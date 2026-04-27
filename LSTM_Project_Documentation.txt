@@ -1,0 +1,699 @@
+================================================================================
+         LSTM NEXT WORD PREDICTION - COMPREHENSIVE PROJECT DOCUMENTATION
+================================================================================
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+  Goal:
+  -----
+  Build a deep learning model capable of predicting the next word in a given
+  sequence of text. This is a core Natural Language Processing (NLP) task used
+  in real-world applications such as autocomplete, predictive typing, search
+  suggestions, and chatbots.
+
+  Technology Stack:
+  -----------------
+  - Language      : Python 3
+  - Framework     : PyTorch
+  - Web Server    : FastAPI + Uvicorn
+  - Data Source   : Wikipedia API (wikipediaapi library)
+  - Frontend      : HTML/CSS/JavaScript
+  - Visualization : Matplotlib
+
+
+================================================================================
+2. MODEL ARCHITECTURE
+================================================================================
+
+  Model Type: Deep LSTM (Long Short-Term Memory) Recurrent Neural Network
+
+  Layer-by-Layer Structure:
+  -------------------------
+  +-----------------------------------------------------------------------+
+  | Layer #  | Type              | Details                                |
+  +----------+-------------------+----------------------------------------+
+  |    1     | Embedding         | vocab_size -> 128 dimensions           |
+  |    2     | LSTM (Layer 1)    | input_size=128, hidden_size=256        |
+  |    3     | Dropout           | 20% dropout between LSTM layers       |
+  |    4     | LSTM (Layer 2)    | input_size=256, hidden_size=256        |
+  |    5     | Fully Connected   | 256 -> vocab_size (output logits)      |
+  +-----------------------------------------------------------------------+
+
+  Code Definition (from train.py):
+  --------------------------------
+  class LSTMModel(nn.Module):
+      def __init__(self, vocab_size, embedding_dim, hidden_dim):
+          super(LSTMModel, self).__init__()
+          self.embedding = nn.Embedding(vocab_size, embedding_dim)
+          self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=2,
+                             batch_first=True, dropout=0.2)
+          self.fc = nn.Linear(hidden_dim, vocab_size)
+
+      def forward(self, x):
+          embedded = self.embedding(x)
+          lstm_out, _ = self.lstm(embedded)
+          last_time_step = lstm_out[:, -1, :]
+          out = self.fc(last_time_step)
+          return out
+
+  Hyperparameters Summary:
+  ------------------------
+  - vocab_size     : Dynamic (depends on the corpus, typically ~50,000+)
+  - embedding_dim  : 128
+  - hidden_dim     : 256
+  - num_layers     : 2
+  - dropout        : 0.2 (between LSTM layers)
+  - learning_rate  : 0.001
+  - batch_size     : 1024
+  - epochs         : 20
+  - max_norm (clip): 5.0
+
+  Why 2 Layers and 256 Hidden Units?
+  -----------------------------------
+  - A single LSTM layer can learn basic sequential patterns, but stacking
+    two layers allows the model to learn hierarchical representations. The
+    first layer captures low-level patterns (word co-occurrences), while the
+    second layer captures higher-level abstractions (phrase-level semantics).
+  - 256 hidden units provide a good balance between model capacity and
+    computational cost. Fewer units (e.g., 64) would underfit the large
+    vocabulary, while more units (e.g., 512) would increase training time
+    and risk overfitting.
+  - Impact of Making the Network Deeper: Adding more layers increases the
+    model's representational power but also increases the risk of vanishing
+    gradients, training time, and overfitting. With gradient clipping and
+    dropout, 2 layers is the practical sweet spot for this task.
+
+
+================================================================================
+3. INPUTS, OUTPUTS, AND TARGET VARIABLE
+================================================================================
+
+  Input:
+  ------
+  A sequence of 9 word indices (integers). Each integer maps to a unique word
+  in the vocabulary via the tokenizer.
+
+  Example: "the cat sat on" -> [42, 105, 312, 87, 0, 0, 0, 0, 0]
+           (padded to length 9 with leading zeros)
+
+  Output:
+  -------
+  A single integer representing the index of the predicted next word.
+
+  Example: predicted index = 201 -> tokenizer maps 201 -> "the"
+
+  Sequence Length:
+  ----------------
+  - Maximum sequence length (window size): 10
+  - Input features (X): 9 words (first 9 of the 10-word window)
+  - Target label (y): 1 word (the 10th word)
+
+  Target Variable Type:
+  ---------------------
+  CLASSIFICATION (Multi-class)
+  - This is NOT a regression task. The model outputs a probability distribution
+    over the entire vocabulary (softmax implied by CrossEntropyLoss), and the
+    word with the highest probability is selected as the prediction.
+  - Number of classes = vocab_size (total unique words in the corpus).
+
+
+================================================================================
+4. DATA PRE-PROCESSING
+================================================================================
+
+  4.1 Data Collection
+  -------------------
+  - Source: Wikipedia articles fetched programmatically via the wikipediaapi
+    Python library.
+  - Topics: 80+ diverse topics covering Science, History, Geography, Politics,
+    Technology, Health, Finance, Philosophy, AI, Mathematics, Sports, Law, etc.
+  - Corpus Size Target: 1,000,000 words.
+  - Storage: Raw text is saved to data/raw_text.txt (~6.8 MB).
+
+  4.2 Text Cleaning (preprocess.py -> clean_text)
+  ------------------------------------------------
+  Step 1: Convert entire text to lowercase.
+          "The Quick Fox" -> "the quick fox"
+
+  Step 2: Remove all non-alphabetic characters (numbers, punctuation, symbols).
+          "hello, world! 123" -> "hello world"
+
+  Step 3: Normalize whitespace (collapse multiple spaces into one).
+          "the   quick   fox" -> "the quick fox"
+
+  Code:
+      def clean_text(text):
+          text = text.lower()
+          text = re.sub(r'[^a-zA-Z\s]', '', text)
+          text = re.sub(r'\s+', ' ', text).strip()
+          return text
+
+  4.3 Handling Missing Values
+  ---------------------------
+  - Missing values are not applicable in the traditional tabular sense since
+    the data is raw text.
+  - However, out-of-vocabulary (OOV) words during inference are mapped to
+    index 0, which acts as a "padding" / "unknown" token.
+  - Wikipedia pages that do not exist are skipped with a warning message.
+
+  4.4 Normalization
+  -----------------
+  - Standard numerical normalization (Min-Max or Z-score) is NOT used because
+    the inputs are discrete word indices, not continuous numerical values.
+  - Instead, the Embedding Layer serves as the normalization mechanism. It maps
+    each discrete word index to a dense 128-dimensional continuous vector.
+    During training, these vectors are learned such that semantically similar
+    words end up with similar vector representations, effectively creating a
+    normalized semantic space that improves convergence.
+
+  4.5 Tokenization (preprocess.py -> SimpleTokenizer)
+  ---------------------------------------------------
+  A custom tokenizer is built from scratch (no external NLP library dependency):
+  - Collects all unique words from the corpus.
+  - Sorts them alphabetically.
+  - Assigns each word a unique integer index starting from 1.
+  - Index 0 is reserved for padding/unknown tokens.
+
+  Code:
+      class SimpleTokenizer:
+          def fit_on_texts(self, texts):
+              words = set()
+              for text in texts:
+                  words.update(text.split())
+              self.word_index = {word: i+1 for i, word in enumerate(sorted(words))}
+              self.index_word = {i+1: word for i, word in enumerate(sorted(words))}
+              self.total_words = len(self.word_index) + 1
+
+
+================================================================================
+5. DATA STRUCTURING - SLIDING WINDOW APPROACH
+================================================================================
+
+  How Temporal Data is Split into Sequences for LSTM Training:
+  ------------------------------------------------------------
+
+  The sliding window (n-gram) approach is used to convert a flat sequence of
+  words into (input, target) pairs suitable for supervised learning.
+
+  Example with max_sequence_len = 5 and text = "the cat sat on the mat":
+
+  Tokenized: [42, 105, 312, 87, 42, 201]
+
+  Sliding Window generates these sequences:
+  +-----------------------------------------+--------+
+  | Input Sequence (X)                      | Target |
+  +-----------------------------------------+--------+
+  | [0, 0, 0, 42]                           |  105   |
+  | [0, 0, 42, 105]                         |  312   |
+  | [0, 42, 105, 312]                       |   87   |
+  | [42, 105, 312, 87]                      |   42   |
+  | [105, 312, 87, 42]                      |  201   |
+  +-----------------------------------------+--------+
+
+  Key Points:
+  - Early sequences are shorter and are pre-padded with zeros.
+  - The window slides one word at a time through the entire corpus.
+  - This generates approximately (corpus_length - 1) training samples.
+
+  Code (from preprocess.py):
+      def prepare_sequences(text, max_sequence_len=10):
+          tokenized_text = tokenizer.texts_to_sequences([text])[0]
+          input_sequences = []
+          for i in range(1, len(tokenized_text)):
+              n_gram_sequence = tokenized_text[max(0, i - max_sequence_len + 1): i + 1]
+              input_sequences.append(n_gram_sequence)
+          # Pad sequences
+          for seq in input_sequences:
+              padded_seq = [0] * (max_len - len(seq)) + seq
+          X, y = input_sequences[:, :-1], input_sequences[:, -1]
+          return X, y, total_words, actual_max_len, tokenizer
+
+
+================================================================================
+6. TRAINING AND OPTIMIZATION
+================================================================================
+
+  6.1 Data Splitting
+  ------------------
+  - Training Set : 90% of all generated sequences (random split)
+  - Validation Set: 10% of all generated sequences
+  - The split is done using torch.utils.data.random_split() to ensure
+    randomness and prevent data leakage.
+
+  6.2 Optimizer: Adam (Adaptive Moment Estimation)
+  -------------------------------------------------
+  - Optimizer Used: torch.optim.Adam
+  - Learning Rate: 0.001 (default)
+
+  Why Adam?
+  - Adam combines the best of two other optimizers:
+    * AdaGrad: Adapts learning rates per parameter based on historical gradients.
+    * RMSProp: Uses a moving average of squared gradients to normalize.
+  - Adam maintains two running averages for each parameter:
+    * First moment (mean of gradients) -> provides momentum.
+    * Second moment (mean of squared gradients) -> provides adaptive scaling.
+  - This makes Adam particularly well-suited for:
+    * Sparse gradients (common in NLP with large vocabularies)
+    * Non-stationary objectives (the loss landscape changes as embeddings learn)
+    * Faster convergence compared to vanilla SGD
+  - Adam requires minimal hyperparameter tuning; the default lr=0.001 works
+    well for most deep learning tasks.
+
+  6.3 Loss Function: Cross-Entropy Loss
+  --------------------------------------
+  - Loss Used: nn.CrossEntropyLoss()
+
+  Why Cross-Entropy?
+  - This is a multi-class classification problem where the model must predict
+    one word out of the entire vocabulary.
+  - Cross-Entropy Loss measures the divergence between:
+    * The predicted probability distribution (model output after softmax)
+    * The true distribution (one-hot encoded target word)
+  - It is defined as:
+        Loss = -sum( y_true * log(y_predicted) )
+    where y_true is 1 for the correct class and 0 for all others.
+  - PyTorch's CrossEntropyLoss combines LogSoftmax + NLLLoss internally,
+    so the model outputs raw logits (no need for explicit softmax layer).
+  - This loss heavily penalizes confident wrong predictions, encouraging the
+    model to produce well-calibrated probability distributions.
+
+
+================================================================================
+7. HANDLING THE EXPLODING GRADIENT PROBLEM
+================================================================================
+
+  The Problem:
+  ------------
+  In recurrent networks like LSTMs, gradients are propagated backward through
+  time (BPTT). When sequences are long or networks are deep, gradients can be
+  multiplied repeatedly, causing them to grow exponentially ("explode"). This
+  leads to:
+  - NaN/Inf values in model weights
+  - Extremely large weight updates that destabilize training
+  - Model divergence (loss shoots up instead of decreasing)
+
+  Our Solution: Gradient Clipping
+  --------------------------------
+  - Implementation: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+  - This is applied AFTER loss.backward() and BEFORE optimizer.step().
+
+  How It Works:
+  - After computing gradients via backpropagation, the L2 norm of all
+    gradients is calculated.
+  - If the total gradient norm exceeds max_norm (5.0), all gradients are
+    scaled down proportionally:
+        gradient = gradient * (max_norm / total_norm)
+  - This preserves the direction of the gradient update while limiting its
+    magnitude, preventing explosive weight changes.
+
+  Code (from train.py):
+      loss.backward()
+      torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+      optimizer.step()
+
+  Why max_norm = 5.0?
+  - A value of 5.0 is a widely used default in NLP and sequence modeling.
+  - Too small (e.g., 0.1) would slow down training by overly restricting updates.
+  - Too large (e.g., 100) would not effectively prevent exploding gradients.
+
+  Note: LSTMs inherently mitigate the VANISHING gradient problem (not
+  exploding) through their gating mechanisms. Gradient clipping specifically
+  addresses the exploding gradient problem.
+
+
+================================================================================
+8. EVALUATION METRICS
+================================================================================
+
+  Primary Metric: Cross-Entropy Loss
+  -----------------------------------
+  - Training Loss: Measured per epoch on the training set.
+  - Validation Loss: Measured per epoch on the held-out validation set.
+  - The gap between training and validation loss indicates generalization:
+    * Small gap  -> model generalizes well
+    * Large gap  -> model is overfitting (memorizing training data)
+
+  Why Loss as the Primary Metric?
+  - For next-word prediction with a large vocabulary (50,000+ classes),
+    raw accuracy can be misleading. A model might predict a semantically
+    reasonable word that is not the exact ground truth, yet accuracy would
+    count it as wrong.
+  - Cross-Entropy loss captures the quality of the entire probability
+    distribution, not just the top-1 prediction.
+
+  Secondary Metric: Perplexity (Derivable)
+  -----------------------------------------
+  - Perplexity = exp(Cross-Entropy Loss)
+  - It measures how "confused" the model is. A perplexity of 100 means the
+    model is as uncertain as if it were randomly choosing from 100 words.
+  - Lower perplexity = better model.
+
+
+================================================================================
+9. VISUALIZATION - TRAINING AND VALIDATION LOSS CURVES
+================================================================================
+
+  How the Model's Learning is Visualized:
+  ----------------------------------------
+  The training process records both training loss and validation loss at the
+  end of every epoch. These are saved to models/history.json for post-training
+  analysis.
+
+  History File Format (models/history.json):
+  ------------------------------------------
+  {
+      "train_loss": [6.82, 5.91, 5.45, 5.12, ...],
+      "val_loss":   [6.90, 6.01, 5.55, 5.20, ...]
+  }
+
+  Visualization Script (src/visualize.py):
+  -----------------------------------------
+  A dedicated script plots the loss curves using Matplotlib:
+
+      import json
+      import matplotlib.pyplot as plt
+
+      with open('models/history.json', 'r') as f:
+          history = json.load(f)
+
+      plt.figure(figsize=(10, 6))
+      plt.plot(history['train_loss'], label='Train Loss', color='#6366f1')
+      plt.plot(history['val_loss'], label='Validation Loss', color='#c084fc')
+      plt.title('Model Training History')
+      plt.xlabel('Epochs')
+      plt.ylabel('Loss (Cross-Entropy)')
+      plt.legend()
+      plt.grid(True, linestyle='--', alpha=0.6)
+      plt.savefig('models/loss_curve.png')
+      plt.show()
+
+  How to Run:
+      pip install matplotlib
+      python src/visualize.py
+
+  What to Look For in the Loss Curves:
+  -------------------------------------
+  1. GOOD TRAINING (Both curves decrease together):
+     Loss
+     |  \
+     |   \\       <- Train Loss
+     |    \\      <- Val Loss (close to Train Loss)
+     |     \\
+     |      ------
+     +------------- Epochs
+
+  2. OVERFITTING (Train decreases, Val increases or plateaus):
+     Loss
+     |  \
+     |   \        <- Val Loss (starts increasing)
+     |    \  /---
+     |     \/
+     |      \     <- Train Loss (keeps decreasing)
+     |       ----
+     +------------- Epochs
+
+  Overfitting Detection:
+  - If the validation loss starts increasing while training loss continues
+    to decrease, the model is overfitting.
+  - Mitigation strategies in this project:
+    * Dropout (0.2 between LSTM layers) - randomly deactivates neurons
+    * Early stopping (manual observation of loss curves)
+    * Large and diverse training corpus (1M words from 80+ topics)
+
+
+================================================================================
+10. LONG-TERM DEPENDENCIES AND SEQUENCE LENGTH
+================================================================================
+
+  How the Model Handles Long-Term Dependencies:
+  -----------------------------------------------
+  Standard RNNs suffer from the vanishing gradient problem, making them unable
+  to learn dependencies between words that are far apart. LSTMs solve this
+  with the CELL STATE, a dedicated memory channel that runs through the entire
+  sequence with minimal transformations.
+
+  - The Forget Gate selectively removes irrelevant old information.
+  - The Input Gate selectively adds relevant new information.
+  - The Cell State acts as a "conveyor belt" that can carry information
+    unchanged across many time steps.
+
+  Does Prediction Quality Drop for Very Long Sequences?
+  ------------------------------------------------------
+  - In theory, LSTMs can maintain information over hundreds of time steps.
+  - In practice, performance degrades for very long sequences (>50-100 tokens)
+    because:
+    * The cell state still experiences some information dilution over time.
+    * The model's capacity (hidden_dim=256) limits how much it can remember.
+    * Gradient flow, while better than RNNs, is not perfect over long ranges.
+  - Our project uses a window of 10 words, which is well within the effective
+    range of LSTMs and captures sufficient local semantic context for
+    next-word prediction.
+  - For tasks requiring very long-range dependencies (>100 tokens), Transformer
+    architectures with attention mechanisms are preferred over LSTMs.
+
+
+================================================================================
+11. MATHEMATICAL MODEL OF LSTM
+================================================================================
+
+  An LSTM cell processes one input at each time step and maintains two state
+  vectors that flow from step to step:
+  - Cell State (C_t): The long-term memory.
+  - Hidden State (h_t): The short-term output / working memory.
+
+  Notation:
+  - x_t         : Input vector at time step t
+  - h_{t-1}     : Hidden state from the previous time step
+  - C_{t-1}     : Cell state from the previous time step
+  - W_f, W_i, W_C, W_o : Weight matrices for each gate
+  - b_f, b_i, b_C, b_o : Bias vectors for each gate
+  - sigma       : Sigmoid activation function (output between 0 and 1)
+  - tanh        : Hyperbolic tangent function (output between -1 and 1)
+  - *           : Element-wise multiplication (Hadamard product)
+  - [h, x]     : Concatenation of vectors h and x
+
+  ---------------------------------------------------------------------------
+  STEP 1: FORGET GATE (f_t)
+  ---------------------------------------------------------------------------
+  Purpose: Decides WHAT information to THROW AWAY from the cell state.
+
+  Formula:
+      f_t = sigma( W_f . [h_{t-1}, x_t] + b_f )
+
+  - Takes the previous hidden state and current input.
+  - Produces a vector of values between 0 and 1 for each element of C_{t-1}.
+  - A value of 0 means "completely forget this", 1 means "completely keep this".
+
+  Example: When processing the word "she" after "John went to the store. She",
+  the forget gate might learn to forget the subject "John" since the context
+  has shifted to "She".
+
+  ---------------------------------------------------------------------------
+  STEP 2: INPUT GATE (i_t) AND CANDIDATE CELL STATE (C_tilde)
+  ---------------------------------------------------------------------------
+  Purpose: Decides WHAT NEW information to STORE in the cell state.
+
+  Formulas:
+      i_t     = sigma( W_i . [h_{t-1}, x_t] + b_i )
+      C_tilde = tanh( W_C . [h_{t-1}, x_t] + b_C )
+
+  - i_t (Input Gate): Determines which values to update (0 to 1 scale).
+  - C_tilde (Candidate): Creates a vector of new candidate values that
+    COULD be added to the cell state (scaled between -1 and 1 by tanh).
+
+  The combination (i_t * C_tilde) controls both WHAT to add and HOW MUCH.
+
+  ---------------------------------------------------------------------------
+  STEP 3: CELL STATE UPDATE (C_t)
+  ---------------------------------------------------------------------------
+  Purpose: Updates the long-term memory by combining old and new information.
+
+  Formula:
+      C_t = f_t * C_{t-1} + i_t * C_tilde
+
+  - f_t * C_{t-1}    : Forgets parts of the old cell state.
+  - i_t * C_tilde    : Adds selected new information.
+  - This is the KEY INNOVATION of LSTMs. The cell state flows through time
+    with only linear interactions (multiply and add), which prevents gradients
+    from vanishing during backpropagation.
+
+  ---------------------------------------------------------------------------
+  STEP 4: OUTPUT GATE (o_t) AND HIDDEN STATE (h_t)
+  ---------------------------------------------------------------------------
+  Purpose: Decides WHAT to OUTPUT based on the current cell state.
+
+  Formulas:
+      o_t = sigma( W_o . [h_{t-1}, x_t] + b_o )
+      h_t = o_t * tanh( C_t )
+
+  - The cell state is passed through tanh (scales to -1 to 1).
+  - The output gate filters which parts of the cell state to expose.
+  - h_t serves dual purposes:
+    * It is the OUTPUT of this time step (used for predictions).
+    * It is passed to the NEXT time step as context.
+
+  ---------------------------------------------------------------------------
+  COMPLETE DATA FLOW DIAGRAM
+  ---------------------------------------------------------------------------
+
+                    C_{t-1}                         C_t
+       ───────────────┬──────── x ───── + ──────────┬──────────────>
+                      |        |        |           |
+                      |      f_t      i_t * C~     |
+                      |        |        |    |      |
+                      |    +-------+ +-------+      |
+                      |    |Forget | |Input  |      |
+                      |    | Gate  | | Gate  |      |
+                      |    +---+---+ +---+---+      |
+                      |        |         |          |
+                      |     sigma     sigma  tanh   |
+                      |        |         |    |     |
+                      |        |         |    |     |      tanh
+       h_{t-1}  ──────┤────────┤─────────┤────┤     ├──────┬──── x ──> h_t
+                      |        |         |    |     |      |     |
+                      |    [h,x]     [h,x]  [h,x]  |    o_t    |
+                      |                             |      |     |
+          x_t  ───────┘                             |  +---+---+ |
+                                                    |  |Output | |
+                                                    |  | Gate  | |
+                                                    |  +-------+ |
+                                                    |    sigma   |
+                                                    |      |     |
+                                                    |   [h,x]   |
+                                                    |            |
+                                                    └────────────┘
+
+  ---------------------------------------------------------------------------
+  HOW SEQUENCE LEARNING IS ACHIEVED
+  ---------------------------------------------------------------------------
+
+  Sequence learning is achieved through the RECURRENT connection:
+
+  Time Step 1:  x_1 + (h_0, C_0)  -->  LSTM Cell  -->  (h_1, C_1)
+  Time Step 2:  x_2 + (h_1, C_1)  -->  LSTM Cell  -->  (h_2, C_2)
+  Time Step 3:  x_3 + (h_2, C_2)  -->  LSTM Cell  -->  (h_3, C_3)
+  ...
+  Time Step T:  x_T + (h_{T-1}, C_{T-1}) --> LSTM Cell --> (h_T, C_T)
+
+  - The SAME LSTM cell (same weights) processes each time step.
+  - h_t and C_t carry information from ALL previous time steps.
+  - By time step T, h_T encodes a compressed representation of the entire
+    input sequence [x_1, x_2, ..., x_T].
+  - In our model, we take h_T (the last hidden state) and pass it through
+    a fully connected layer to predict the next word:
+
+        prediction = FC( h_T )  -->  [logits for each word in vocabulary]
+        predicted_word = argmax( prediction )
+
+
+================================================================================
+12. INFERENCE / PREDICTION PIPELINE
+================================================================================
+
+  The inference pipeline (app.py) follows these steps:
+
+  1. User types a text input (e.g., "the cat sat on").
+  2. Text is cleaned using the same clean_text() function.
+  3. Text is tokenized into integer indices using the saved tokenizer.
+  4. Sequence is padded/truncated to length 9 (max_len - 1).
+  5. Padded sequence is fed into the trained LSTM model.
+  6. Model outputs logits for each word in the vocabulary.
+  7. The word with the highest logit (argmax) is returned as the prediction.
+
+  Web Interface:
+  - Built with HTML/CSS/JavaScript.
+  - Served via FastAPI at http://127.0.0.1:8000
+  - Uses a modern glassmorphism design with the Outfit font.
+  - User types text, clicks "Predict Next Word", and sees the result.
+
+
+================================================================================
+13. PROJECT FILE STRUCTURE
+================================================================================
+
+  DL_Ass_5/
+  |
+  |-- data/
+  |   |-- raw_text.txt            # Raw Wikipedia corpus (~6.8 MB)
+  |
+  |-- models/
+  |   |-- lstm_model.pth          # Trained PyTorch model weights
+  |   |-- tokenizer.pickle        # Serialized SimpleTokenizer object
+  |   |-- config.json             # Hyperparameters (vocab, dims, etc.)
+  |   |-- history.json            # Training/Validation loss per epoch
+  |   |-- loss_curve.png          # Plotted loss curves (after visualization)
+  |
+  |-- src/
+  |   |-- preprocess.py           # Text cleaning, tokenization, sequencing
+  |   |-- train.py                # Model definition, data fetch, training loop
+  |   |-- app.py                  # FastAPI server for inference
+  |   |-- index.html              # Web UI for next-word prediction
+  |   |-- visualize.py            # Matplotlib script for loss curve plotting
+  |
+  |-- requirements.txt            # Python dependencies
+  |-- install.bat                 # Windows installer script
+  |-- start.bat                   # Starts the FastAPI server
+  |-- train.bat                   # Runs the training pipeline
+  |-- LSTM_Project_Documentation.txt  # This documentation file
+
+
+================================================================================
+14. HOW TO RUN
+================================================================================
+
+  Step 1: Install Dependencies
+      pip install torch numpy wikipediaapi fastapi uvicorn matplotlib
+
+  Step 2: Train the Model
+      python src/train.py
+      (This fetches Wikipedia data, preprocesses it, trains the LSTM, and
+       saves the model, tokenizer, config, and training history.)
+
+  Step 3: Visualize Training (Optional)
+      python src/visualize.py
+      (Plots and saves the training/validation loss curves.)
+
+  Step 4: Start the Server
+      python src/app.py
+      (Opens the web interface at http://127.0.0.1:8000)
+
+
+================================================================================
+15. SUMMARY TABLE
+================================================================================
+
+  +-------------------------------+--------------------------------------------+
+  | Aspect                        | Detail                                     |
+  +-------------------------------+--------------------------------------------+
+  | Model                         | 2-Layer Stacked LSTM                       |
+  | Task                          | Next Word Prediction (Classification)      |
+  | Input                         | Sequence of 9 word indices                 |
+  | Output                        | 1 predicted word index                     |
+  | Sequence Length                | 10 (9 input + 1 target)                   |
+  | Target Variable               | Multi-class Classification                 |
+  | Vocab Size                    | Dynamic (~50,000+)                         |
+  | Embedding Dim                 | 128                                        |
+  | Hidden Dim                    | 256                                        |
+  | Num LSTM Layers               | 2                                          |
+  | Dropout                       | 0.2                                        |
+  | Optimizer                     | Adam (lr=0.001)                            |
+  | Loss Function                 | Cross-Entropy Loss                         |
+  | Gradient Clipping             | Yes (max_norm=5.0)                         |
+  | Train/Val Split               | 90% / 10%                                  |
+  | Batch Size                    | 1024                                       |
+  | Epochs                        | 20                                         |
+  | Data Source                   | Wikipedia (80+ topics)                     |
+  | Corpus Size                   | ~1,000,000 words                           |
+  | Preprocessing                 | Lowercase, regex clean, tokenize, pad      |
+  | Normalization                 | Embedding layer (learned representations)  |
+  | Sequence Method               | Sliding Window (n-gram)                    |
+  | Evaluation Metric             | Cross-Entropy Loss + Perplexity            |
+  | Visualization                 | Train/Val Loss Curves (Matplotlib)         |
+  | Serving                       | FastAPI + HTML/CSS/JS Frontend             |
+  +-------------------------------+--------------------------------------------+
+
+================================================================================
+                              END OF DOCUMENTATION
+================================================================================
